@@ -1,0 +1,130 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Spherical Pendulum</title>
+<style>
+body{font-family:system-ui,sans-serif;margin:0;background:#fff;color:#111827;display:flex;flex-wrap:wrap;gap:12px;padding:12px}
+#ctl{width:300px}#main{flex:1;min-width:480px}
+fieldset{border:1.5px solid #9ca3af;border-radius:8px;margin:0 0 10px;padding:6px 10px 10px}
+legend{font-weight:bold;font-size:13px;padding:0 6px;color:#1d4ed8}
+label{display:flex;justify-content:space-between;font-size:13px;margin-top:6px}
+input[type=range]{width:100%}.cb{justify-content:flex-start;gap:8px;align-items:center}
+button,a.btn{display:inline-block;margin:4px 4px 0 0;padding:6px 12px;border:0;border-radius:6px;background:#2563eb;color:#fff;cursor:pointer;font-size:13px;text-decoration:none}
+.box{border:1.5px solid #9ca3af;border-radius:8px;padding:10px;margin-bottom:12px}
+#big{font-size:30px;font-weight:bold;color:#b45309;margin:2px 0}
+canvas{background:#fff;border:1px solid #d1d5db;border-radius:6px;width:100%}
+table{font-size:12px;border-collapse:collapse;width:100%}td,th{padding:2px 6px;text-align:right;border-bottom:1px solid #e5e7eb}
+.warn{color:#dc2626}.ok{color:#059669}.small{font-size:12px;color:#6b7280}
+.pill{background:#fff;border-radius:20px;padding:6px 14px;margin-bottom:6px;box-shadow:0 1px 4px #0003}
+</style></head><body>
+<div id="ctl">
+ <h3 style="margin:0 0 4px">Spherical pendulum</h3>
+ <div class="small" style="margin-bottom:8px">½mR²θ̇² + ½pφ²/(mR²sin²θ) − mgR cosθ = E<br>θ = 0 hangs down at (0, 0, 0). θ₀ starts in the yz plane.<br><b>All numbers are computed in Python</b>; this page only draws them.</div>
+ <fieldset><legend>Mass</legend><div id="g_mass"></div></fieldset>
+ <fieldset><legend>Pendulum &amp; field</legend><div id="g_pend"></div></fieldset>
+ <fieldset><legend>Initial conditions</legend><div id="g_init"></div></fieldset>
+ <fieldset><legend>Animation</legend><div id="g_anim"></div>
+  <button id="run">Start</button><button id="reset">Reset</button><a class="btn" id="csv" href="#">Export θ̇ (CSV)</a>
+  <div class="small" id="status" style="margin-top:6px"></div></fieldset>
+ <fieldset><legend>Adjustments</legend>
+  <label class="cb"><input type="checkbox" id="c_xy" checked> Trajectory (x, y) on floor</label>
+  <label class="cb"><input type="checkbox" id="c_xyz" checked> Trajectory (x, y, z)</label>
+  <label class="cb"><input type="checkbox" id="c_axes" checked> Axes</label>
+  <label class="cb"><input type="checkbox" id="c_g"> g force (arrow toward pivot)</label>
+ </fieldset>
+ <fieldset><legend>Results (from Python)</legend>
+  <div>E = <b id="E"></b> J &nbsp; pφ = <b id="pphi"></b></div>
+  <div>Energy: <b id="cls"></b></div>
+  <div style="margin-top:6px">θ̇ (rad/s) this frame:</div><div id="big">–</div>
+  <div class="small">equation: <b id="eq"></b> · integrator: <b id="num"></b><br>root argument: <span id="arg"></span></div>
+  <div style="margin-top:6px">g-force felt T/(mg): <b id="gf"></b></div>
+ </fieldset>
+</div>
+<div id="main">
+ <div class="box" style="position:relative;padding:0"><canvas id="c3" width="700" height="440" style="border:0;background:#f1f1f1"></canvas>
+  <div style="position:absolute;left:8px;top:8px;font:bold 18px Georgia,serif;color:#334155">
+   <div class="pill" id="pt">t = 0.00 s</div><div class="pill" id="pg" style="display:none">g force = 0 g</div></div></div>
+ <div class="box"><b>θ̇(t)</b><canvas id="cg" width="700" height="170"></canvas></div>
+ <div class="box"><b>θ̇ per frame</b><table id="tb"></table></div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const P={
+ m:{g:'g_mass',l:'Mass M (kg)',min:.1,max:40,step:.1,v:1},
+ R:{g:'g_pend',l:'Length R (m)',min:.3,max:10,step:.05,v:1},
+ g:{g:'g_pend',l:'g (m/s²)',min:1,max:25,step:.1,v:9.81},
+ th0:{g:'g_init',l:'θ₀ from down (rad)',min:0,max:3.1,step:.01,v:.8},
+ w0:{g:'g_init',l:'θ̇₀ (rad/s)',min:-15,max:15,step:.1,v:0},
+ ph0:{g:'g_init',l:'φ̇₀ (rad/s)',min:-15,max:15,step:.1,v:1.5},
+ tr:{g:'g_anim',l:'Trail length (frames)',min:0,max:1800,step:50,v:800},
+ sp:{g:'g_anim',l:'Speed ×',min:.1,max:3,step:.1,v:1}};
+const SIM=['m','R','g','th0','w0','ph0'];                 // the parameters sent to Python
+let D=null,f=0,shown=-1,run=false,az=-2.0,el=.45,zoom=1,drag=null,timer=null,req=0;
+const query=()=>new URLSearchParams(Object.fromEntries(SIM.map(k=>[k,P[k].v]))).toString();
+for(const k in P){const p=P[k];
+ $(p.g).insertAdjacentHTML('beforeend',`<label>${p.l}<b id="v_${k}">${p.v}</b></label><input type=range id="i_${k}" min=${p.min} max=${p.max} step=${p.step} value=${p.v}>`);
+ $('i_'+k).oninput=e=>{p.v=+e.target.value;$('v_'+k).textContent=p.v;if(SIM.includes(k)){clearTimeout(timer);timer=setTimeout(load,150)}}}
+async function load(){                                     // ask Python to solve the pendulum
+ const my=++req;$('status').textContent='Python is solving…';
+ try{const r=await fetch('/api/simulate?'+query());if(!r.ok)throw new Error(r.status+' '+await r.text());
+  const d=await r.json();if(my!==req)return;D=d;f=0;shown=-1;run=false;$('run').textContent='Start';$('status').textContent='';
+  $('csv').href='/api/csv?'+query();$('E').textContent=D.E.toFixed(3);$('pphi').textContent=D.p_phi.toFixed(3);
+  $('cls').textContent=D.high?'HIGH (goes over the top)':'LOW (oscillates)'}
+ catch(e){$('status').textContent='Server error: '+e.message;$('status').className='small warn'}}
+function fit(c,x,w,h){const d=Math.max(devicePixelRatio||1,1),cw=c.clientWidth||w;
+ c.style.aspectRatio=w+'/'+h;c.style.height='auto';c.width=Math.round(cw*d);c.height=Math.round(cw*h/w*d);x.setTransform(c.width/w,0,0,c.height/h,0,0)}
+const c3=$('c3'),x3=c3.getContext('2d'),cg=$('cg'),xg=cg.getContext('2d');
+const refit=()=>{fit(c3,x3,700,440);fit(cg,xg,700,170)};refit();addEventListener('resize',refit);
+c3.onmousedown=e=>drag=[e.clientX,e.clientY];onmouseup=()=>drag=null;
+c3.onwheel=e=>{e.preventDefault();zoom=Math.max(.5,Math.min(3,zoom*(e.deltaY<0?1.1:.9)))};
+onmousemove=e=>{if(drag){az+=(e.clientX-drag[0])*.01;el=Math.max(.05,Math.min(1.5,el+(e.clientY-drag[1])*.01));drag=[e.clientX,e.clientY]}};
+const L=1.8;                                               // fixed floor half-size: R changes the pendulum, not the scene scale
+function proj(p){const c=Math.cos(az),s_=Math.sin(az),X=p[0]*c-p[1]*s_,Y=p[0]*s_+p[1]*c,zc=p[2]-1.4;
+ const up=zc*Math.cos(el)+Y*Math.sin(el),depth=Y*Math.cos(el)-zc*Math.sin(el)+18,k=18/depth,sc=78*zoom;
+ return[350+X*sc*k,250-up*sc*k,k]}
+function arrow(x,a,b,col){x.strokeStyle=x.fillStyle=col;x.lineWidth=2;x.beginPath();x.moveTo(a[0],a[1]);x.lineTo(b[0],b[1]);x.stroke();
+ const g=Math.atan2(b[1]-a[1],b[0]-a[0]);x.beginPath();x.moveTo(b[0],b[1]);
+ x.lineTo(b[0]-12*Math.cos(g-.35),b[1]-12*Math.sin(g-.35));x.lineTo(b[0]-12*Math.cos(g+.35),b[1]-12*Math.sin(g+.35));x.fill();x.lineWidth=1}
+function poly(pts,fill){x3.beginPath();pts.forEach((p,i)=>{const q=proj(p);i?x3.lineTo(q[0],q[1]):x3.moveTo(q[0],q[1])});x3.closePath();x3.fillStyle=fill;x3.fill()}
+function trailPath(i,flat){const lo=Math.max(0,i-P.tr.v);x3.strokeStyle='#14b8a6';x3.lineWidth=1.6;x3.beginPath();
+ for(let j=lo;j<=i;j++){const q=proj([D.x[j],D.y[j],flat?0:D.z[j]]);j==lo?x3.moveTo(q[0],q[1]):x3.lineTo(q[0],q[1])}x3.stroke()}
+function draw3(i){x3.clearRect(0,0,700,440);const R=P.R.v;
+ const o=proj([0,0,0]),gr=x3.createRadialGradient(o[0],o[1],5,o[0],o[1],300);gr.addColorStop(0,'#d4d4d4');gr.addColorStop(1,'#8f8f8f');
+ poly([[L,L,0],[L,-L,0],[-L,-L,0],[-L,L,0]],gr);
+ x3.fillStyle='#6b7280';x3.font='12px sans-serif';x3.fillText('drag: rotate · wheel: zoom',540,430);
+ if(!D)return;
+ const bp=[D.x[i],D.y[i],D.z[i]],b=proj(bp),sh=[];
+ for(let k=0;k<24;k++){const q=k/24*6.2832;sh.push([bp[0]+.09*Math.cos(q),bp[1]+.09*Math.sin(q),0])}poly(sh,'rgba(50,50,50,.45)');
+ if($('c_xy').checked)trailPath(i,true);
+ if($('c_axes').checked){[['x',[1.6,0,0]],['y',[0,1.6,0]],['z',[0,0,3.4]]].forEach(([n,e])=>{
+   const q=proj(e);arrow(x3,[o[0],o[1]],q,'#1e293b');x3.fillStyle='#1e293b';x3.font='bold 17px sans-serif';
+   x3.fillText(n,q[0]+(n=='x'?-18:6),q[1]+(n=='z'?-4:16))})}
+ if($('c_xyz').checked)trailPath(i,false);
+ const pv=proj([0,0,R]);
+ if($('c_g').checked){const G=D.g_force[i],len=Math.min(R,.15*R*G),u=[-bp[0],-bp[1],R-bp[2]].map(v=>v/R);
+  arrow(x3,[b[0],b[1]],proj([bp[0]+u[0]*len,bp[1]+u[1]*len,bp[2]+u[2]*len]),'#c2631b')}
+ else{x3.strokeStyle='#6b7280';x3.lineWidth=1.2;x3.beginPath();x3.moveTo(pv[0],pv[1]);x3.lineTo(b[0],b[1]);x3.stroke()}
+ x3.fillStyle='#111827';x3.beginPath();x3.arc(pv[0],pv[1],3.5,0,7);x3.fill();
+ const r=(7+2*P.m.v)*b[2],bg=x3.createRadialGradient(b[0]-r*.35,b[1]-r*.35,1,b[0],b[1],r);
+ bg.addColorStop(0,'#fde7b0');bg.addColorStop(.5,'#c98a2b');bg.addColorStop(1,'#5e3508');
+ x3.fillStyle=bg;x3.beginPath();x3.arc(b[0],b[1],r,0,7);x3.fill()}
+function drawG(i){xg.clearRect(0,0,700,170);if(!D)return;const lo=Math.max(0,i-300),v=D.theta_dot.slice(lo,i+1);if(v.length<2)return;
+ const mx=Math.max(1,...v.map(Math.abs));
+ xg.strokeStyle='#d1d5db';xg.beginPath();xg.moveTo(0,85);xg.lineTo(700,85);xg.stroke();
+ xg.strokeStyle='#b45309';xg.beginPath();v.forEach((y,k)=>{const X=k/299*700,Y=85-y/mx*75;k?xg.lineTo(X,Y):xg.moveTo(X,Y)});xg.stroke();
+ xg.fillStyle='#6b7280';xg.font='12px sans-serif';xg.fillText('±'+mx.toFixed(1)+' rad/s',8,12)}
+function readouts(i){const eq=D.theta_dot_eq[i],rad=D.radicand[i],w=D.theta_dot[i];
+ $('pt').textContent='t = '+D.t[i].toFixed(2)+' s';
+ const pg=$('pg');pg.style.display=$('c_g').checked?'':'none';pg.textContent='g force = '+D.g_force[i].toFixed(2)+' g';
+ $('big').textContent=w.toFixed(4);$('num').textContent=w.toFixed(4);
+ $('eq').textContent=eq===null?'cannot solve (root<0)':eq.toFixed(4);
+ const a=$('arg');a.textContent=rad.toExponential(2);a.className=rad<0?'warn':'ok';$('gf').textContent=D.g_force[i].toFixed(3)+' g';
+ let rows='<tr><th>frame</th><th>t (s)</th><th>θ</th><th>θ̇ (Python, integrated)</th><th>θ̇ (Python, equation)</th></tr>';
+ for(let j=i;j>Math.max(-1,i-10);j--)rows+=`<tr><td>${j}</td><td>${D.t[j].toFixed(3)}</td><td>${D.theta[j].toFixed(3)}</td><td><b>${D.theta_dot[j].toFixed(4)}</b></td><td>${D.theta_dot_eq[j]===null?'<span class=warn>NaN</span>':D.theta_dot_eq[j].toFixed(4)}</td></tr>`;
+ $('tb').innerHTML=rows}
+let last=performance.now();
+function loop(now){const dt=Math.min(.05,(now-last)/1000);last=now;
+ if(D){if(run)f=(f+dt*D.fps*P.sp.v)%D.t.length;const i=Math.floor(f);if(i!==shown){readouts(i);shown=i}draw3(i);drawG(i)}else draw3(0);
+ requestAnimationFrame(loop)}
+$('run').onclick=e=>{if(!D)return;run=!run;e.target.textContent=run?'Pause':'Resume'};
+$('reset').onclick=()=>{f=0;shown=-1;run=false;$('run').textContent='Start'};
+['c_xy','c_xyz','c_axes','c_g'].forEach(id=>$(id).onchange=()=>{shown=-1});
+load();requestAnimationFrame(loop);
+</script></body></html>
